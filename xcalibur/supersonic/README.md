@@ -31,10 +31,13 @@ Questions:
 
 ### Kernel 1: TopK
 
+- [ ] write pseudocode
+- [ ] for-each parameter define measure
+
 $256 \le T \le I, I := 1024, W := 32$
 
 $T^* := (256, 256+W, 256+2W, \ldots, I)$
 
-Given: router_logits o (N, E) : (1, N), K
+Given: router_logits, K
 
 * load router logits, softmax/sigmoid, local topk, global topk, write out
