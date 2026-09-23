@@ -15,11 +15,9 @@ $\implies W \le T$  typically, (16, 32, 64)
 
 $\textbf{SM}_i := \{\textbf{CTA}_k := (\text{thread}_j, \forall j \in (k, k+T]), \forall k \in (0, T, \ldots,|S_i|-T) \} $
 
-
 $\textbf{CTA}_i := \{\textbf{warp}_k := (\text{thread}_j, \forall j \in (k, k+W]), \forall k \in (0, W, \ldots,|\textbf{CTA}_i|-W) \} $
 
-
-$\text{rmem}_{\text{arch}}(c) = \text{min}(\text{RMEM[arch]} / c, 255)$
+$\text{rmem}_{\text{arch}}(c) = \text{min}(\text{RMEM[arch]} / c, 256)$
 
 $\text{smem}_{\text{arch}}(c) = \text{SMEM[arch]} / c$
 
