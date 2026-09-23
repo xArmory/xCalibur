@@ -25,9 +25,9 @@ $\textbf{SM}'_i \subset \textbf{SM}_i : |\textbf{SM}'_i| \approx 256/\text{rmem}
 
 Questions:
 
-1. How do we select $\Theta_i$, for a given problem? Such that the objective for-each parameter is met and the work done is complete.
+1. How do we select $\Theta_i$, for a given problem? $\Theta_i := \{T, \text{I/O}_{\{GMEM, TMEM, SMEM, RMEM\}}, \text{ALU}, \text{TC}, \text{SYNC}_{\{warp^i_{j, k}, CTA^i_j\}}\}$
 
-2. $\Theta_i := \{T, \text{I/O}_{\{GMEM, TMEM, SMEM, RMEM\}}, \text{ALU}, \text{TC}, \text{SYNC}_{\{warp^i_{j, k}, CTA^i_j\}}\}$
+Such that the objective for-each parameter is met and the work done is complete. 
 
 ### Kernel 1: TopK
 
