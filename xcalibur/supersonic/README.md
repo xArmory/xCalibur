@@ -27,5 +27,16 @@ $\textbf{SM}'_i \subset \textbf{SM}_i : |\textbf{SM}'_i| \approx 256/\text{rmem}
 
 Questions:
 
-1. How do we compute/select $T$, for a given problem?
-2. Given $T$ how do we choose the right cute layout?
+1. How do we select $\Theta_i$, for a given problem? Such that the objective for-each parameter is met and the work done is complete.
+
+2. $\Theta_i := \{T, \text{I/O}_{\{GMEM, TMEM, SMEM, RMEM\}}, \text{ALU}, \text{TC}, \text{SYNC}_{\{warp^i_{j, k}, CTA^i_j\}}\}$
+
+### Kernel 1: TopK
+
+$256 \le T \le I, I := 1024, W := 32$
+
+$T^* := (256, 256+W, 256+2W, \ldots, I)$
+
+Given: router_logits o (N, E) : (1, N), K
+
+* load router logits, softmax/sigmoid, local topk, global topk, write out
