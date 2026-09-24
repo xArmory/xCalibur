@@ -3,41 +3,80 @@
 > **Target arch**: {sm80}, sm89, {sm120};
 > **DiDo**: bfloat16
 
-## Formulation:
+### xR58
 
-### Prelim Notation:
+```text
++__________________+
+|      smem        |
+--------------------
+|  0   | 0 0 0 0 0 | 
+--------------------
+| col  | row/bank  |
++------------------+
 
-$\textbf{S}_i := \{\text{thread}_i : \forall i \in (0, I]\}$ (typically $I \le 1024, I \in  \N_1$).
++_______________________+
+|_______________________|
+|   lane    |    wid    | 
++-----------------------+
+| 0 0 0 0 0 | 0 0 0 0 0 | 
++-----------+-----------+
+|          tid          |
+|_______________________|
 
-$\S \exists T \le I$
+______________________
+|cta|      sm        |
++---+----------------+  
+| 0 | 0 0 0 0 0 0 0 0|
++---+----------------+
 
-$\implies W \le T$  typically, (16, 32, 64)
+-----------------+
+| mma split v1   |
++________________+
+i015             | 
+| i1531          |
+v v ...          |
+0 1 2 ... 31 wid |
+-----------------+
 
-$\textbf{SM}_i := \{\textbf{CTA}_k := (\text{thread}_j, \forall j \in (k, k+T]), \forall k \in (0, T, \ldots,|S_i|-T) \} $
+-----------------+
+| mma split v2   |
++----------------+
+|      t0        |
++----------------+
+i015h015         | 
+| ih0151531      | 
+v v ...          |
+0 1 2 ... 31 wid |
++----------------+
+| stream offset  |
++----------------+
+|      t1        |
++----------------+
+i015h512527      | 
+| i015h528543    |
+v v ...          |
+0 1 2 ... 31 wid |
+-----------------+
 
-$\textbf{CTA}_i := \{\textbf{warp}_k := (\text{thread}_j, \forall j \in (k, k+W]), \forall k \in (0, W, \ldots,|\textbf{CTA}_i|-W) \} $
 
-$\text{rmem}_{\text{arch}}(c) = \text{min}(\text{RMEM[arch]} / c, 256)$
+swizzle formulae
 
-$\text{smem}_{\text{arch}}(c) = \text{SMEM[arch]} / c$
+```
 
-$\textbf{SM}'_i \subset \textbf{SM}_i : |\textbf{SM}'_i| \approx 256/\text{rmem}_{\text{arch}}(c)$
+### Appendix
 
-Questions:
 
-1. How do we select $\Theta_i$, for a given problem? $\Theta_i := \{T, \text{I/O}_{\{GMEM, TMEM, SMEM, RMEM\}}, \text{ALU}, \text{TC}, \text{SYNC}_{\{warp^i_{j, k}, CTA^i_j\}}\}$
+```text
+_________________________________________________________________________________
+|      smem        |      rmem       |   lane       wid  | cta |      sm        |
+--------------------------------------------------------------------------------+
+|  0   | 0 0 0 0 0 | 0 0 0 0 0 0 0 0 | 0 0 0 0 0 | 0 0 0 | 0 0 | 0 0 0 0 0 0 0 0|
+---------------------------------------------------------------------------------
+| col  | row/bank  |
++------------------+
 
-Such that the objective for-each parameter is met and the work done is complete. 
 
-### Kernel 1: TopK
-
-- [ ] write pseudocode
-- [ ] for-each parameter define measure
-
-$256 \le T \le I, I := 1024, W := 32$
-
-$T^* := (256, 256+W, 256+2W, \ldots, I)$
-
-Given: router_logits, K
-
-* load router logits, softmax/sigmoid, local topk, global topk, write out
+| row    col/bank  |   lane    |  wid
+|0 0 0 | 0 0 0 0 0 | 0 0 0 0 0 | 0 0 0 
+-------------smem---------------------
+```
