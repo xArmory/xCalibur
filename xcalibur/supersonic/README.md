@@ -39,7 +39,6 @@ H/2048 (sm smem config based formula)
 
 
 
-
 ## Configuration
 
 CTA = 1024, 2xCTA / SM
