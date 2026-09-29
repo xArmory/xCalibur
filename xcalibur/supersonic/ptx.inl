@@ -116,3 +116,60 @@ __device__ __forceinline__ void ldcg_b32v8(
 #endif
 }
 
+// SM80+; src and dst must be 16-byte aligned.
+__device__ __forceinline__ void cp_async_ca_b32v4(
+    const void* src,
+    uint32_t* dst
+){
+    asm volatile(
+        "cp.async.ca.shared.global [%0], [%1], 16;\n\t"
+        :
+        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
+          "l"((uint64_t)__cvta_generic_to_global(src))
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void cp_async_commit_group(){
+    asm volatile(
+        "cp.async.commit_group;\n\t"
+        :
+        :
+        : "memory"
+    );
+}
+
+template <int32_t N>
+__device__ __forceinline__ void cp_async_wait_group(){
+    static_assert(N >= 0, "cp.async wait group must be nonnegative");
+    asm volatile(
+        "cp.async.wait_group %0;\n\t"
+        :
+        : "n"(N)
+        : "memory"
+    );
+}
+
+// SM80+ with ordered_metadata support; all 32 lanes must execute.
+// A/B hold packed BF16 pairs; C holds FP32 bits and accumulates in place.
+// fsel selects metadata-providing lanes, independently of the W13 pass.
+template <int32_t fsel = 0>
+__device__ __forceinline__ void mma_sp_m16n8k32_bf16(
+    uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
+    const uint32_t* b,
+    uint32_t* c,
+    uint32_t e
+){
+    static_assert(fsel == 0 || fsel == 1, "mma.sp fsel must be 0 or 1");
+    asm volatile(
+        "mma.sp::ordered_metadata.sync.aligned.m16n8k32.row.col.f32.bf16.bf16.f32 "
+        "{%0, %1, %2, %3}, "
+        "{%4, %5, %6, %7}, "
+        "{%8, %9, %10, %11}, "
+        "{%0, %1, %2, %3}, %12, %13;\n\t"
+        : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+        : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+          "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]),
+          "r"(e), "n"(fsel)
+    );
+}
