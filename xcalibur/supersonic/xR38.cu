@@ -6,6 +6,8 @@
 #include <cfloat>
 #include "ptx.inl"
 
+//@TODO simplify
+
 
 __device__ __forceinline__ void xR38FF1_bf16(
 	uint32_t* W13,
@@ -58,7 +60,6 @@ __device__ __forceinline__ void xR38FF1_bf16(
 							+ (h32 << 7)
 							+ ((threadIdx.x & 31) << 2))
 						)
-						: "memory"
 				);
 
 				ldcg_b32v4(

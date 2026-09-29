@@ -1,10 +1,12 @@
-#pragma once
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cstdint>
 
+
 #define f322b(x) __float_as_uint(x)
 #define u162bf16(x) __ushort_as_bfloat16(x)
+
+//@TODO review helpers
 
 __device__ __forceinline__ uint32_t softmax_bf16x2(
     uint32_t x
@@ -98,25 +100,6 @@ __device__ __forceinline__ void ldcg_b32v4(
     );
 }
 
-__device__ __forceinline__ void ldcg_b32v8(
-    const void* src,
-    uint32_t* dst
-){
-#if __CUDA_ARCH__ >= 1000 && CUDART_VERSION >= 12090
-    asm volatile(
-        "ld.global.cg.L2::256B.v8.b32 {%0, %1, %2, %3, %4, %5, %6, %7}, [%8];\n\t"
-        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3]),
-          "=r"(dst[4]), "=r"(dst[5]), "=r"(dst[6]), "=r"(dst[7])
-        : "l"((uint64_t)__cvta_generic_to_global(src))
-        : "memory"
-    );
-#else
-    ldcg_b32v4(src, dst);
-    ldcg_b32v4((const char*)src + 16, dst + 4);
-#endif
-}
-
-// SM80+; src and dst must be 16-byte aligned.
 __device__ __forceinline__ void cp_async_ca_b32v4(
     const void* src,
     uint32_t* dst
@@ -150,9 +133,6 @@ __device__ __forceinline__ void cp_async_wait_group(){
     );
 }
 
-// SM80+ with ordered_metadata support; all 32 lanes must execute.
-// A/B hold packed BF16 pairs; C holds FP32 bits and accumulates in place.
-// fsel selects metadata-providing lanes, independently of the W13 pass.
 template <int32_t fsel = 0>
 __device__ __forceinline__ void mma_sp_m16n8k32_bf16(
     uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,

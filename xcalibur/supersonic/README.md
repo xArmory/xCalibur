@@ -75,3 +75,5 @@ metadata:
 0x4444'4444 -> w1i0h01, w3i0h01, w1i0h1617, w3i0h1617 fsel=0 or 1
 0xEEEE'EEEE -> w1i0h23, w3i0h23, w1i0h1819, w3i0h1819 fsel=1 or 0
 ```
+
+@TODO review layout algebra
