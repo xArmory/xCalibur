@@ -2,37 +2,20 @@
 
 # xArmory // xCalibur
 
-Remember when Kaggle wasn't pay to win?
+Remember when Kaggle was not pay to win?
 
-Don't worry, I gotchu.
+Don't worry I gotchu, presenting xArmory/xCalibur.
 
-xCalibur is an effort to level the playing field by co-designing GPU kernels for the NVIDIA L4. The goal: make inference and training as fast as the hardware allows, so you can do more with the compute you've got.
+An effort to level the playing field through co-designing GPU kernels for the L4.
 
-First up: [Supersonic MoE](xcalibur/supersonic/README.md), built around [ARC Prize 2026](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-2)'s 4×L4 setup. Kernel details, layouts and co-design notes live there.
+The goal is to supply the backend GPU kernels needed to run inference and training as fast as physically possible.
 
-Jokes aside, it's still a work in progress. Small kernel tests pass on the L4; full model validation and performance work are still ahead.
+First up: [Supersonic MoE](xcalibur/supersonic/README.md).
 
-## Try it
+Jokes aside, it's still a work in progress.
 
-L4 / SM89, CUDA PyTorch, and a matching CUDA toolkit (`nvcc`) installed:
+Taking a breather. We got ahead of ourselves implementing without enough co-design. After some rest, we'll work through it together: the design, the implementation, and a faster variant.
 
-```bash
-python -m pip install --no-build-isolation -e '.[test]'
-python -m pytest -q tests
-```
+[Follow along on Kaggle](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-2/discussion/744237).
 
-Offline on Kaggle, use `--no-deps -e .` instead of `-e '.[test]'` with dependencies already installed.
-
-```python
-from xcalibur import topk, pack_w13, xR38F1
-
-routes = topk(logits, K=4, softmax=True)
-W13 = pack_w13(gate, up)
-Y = xR38F1(W13, X, routes)
-```
-
-Forward only for now. [Tensor contracts and tests](tests/README.md).
-
-[Follow the discussion on Kaggle](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-2/discussion/744237).
-
-Let's get your Sol back.
+Lets get your Sol back.

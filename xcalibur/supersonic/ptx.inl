@@ -136,6 +136,17 @@ __device__ __forceinline__ uint32_t cvt_bf16x2_f32(
     return x;
 }
 
+__device__ __forceinline__ uint32_t prmt_b32(
+    uint32_t x, uint32_t y, uint32_t s
+){
+    asm volatile(
+        "prmt.b32 %0, %0, %1, %2;\n\t"
+        : "+r"(x)
+        : "r"(y), "r"(s)
+    );
+    return x;
+}
+
 __device__ __forceinline__ void ldcg_b16(
     const void* src,
     uint16_t& dst
@@ -228,6 +239,18 @@ __device__ __forceinline__ void stg_b32(
     );
 }
 
+__device__ __forceinline__ void stg_b16(
+    void* dst,
+    uint16_t x
+){
+    asm volatile(
+        "st.global.b16 [%0], %1;\n\t"
+        :
+        : "l"((uint64_t)__cvta_generic_to_global(dst)), "h"(x)
+        : "memory"
+    );
+}
+
 __device__ __forceinline__ void stg_b32v4(
     void* dst,
     uint32_t a, uint32_t b, uint32_t c, uint32_t d
@@ -294,6 +317,74 @@ __device__ __forceinline__ void cp_async_ca_b32v4(
         : "r"((uint32_t)__cvta_generic_to_shared(dst)),
           "l"((uint64_t)__cvta_generic_to_global(src)),
           "r"(size)
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void cp_async_evict_last_b32v4(
+    const void* src,
+    uint32_t* dst,
+    bool valid = true
+){
+    asm volatile(
+        "{\n\t"
+        ".reg .b64 policy;\n\t"
+        "createpolicy.fractional.L2::evict_last.b64 policy, 1.0;\n\t"
+        "cp.async.cg.shared.global.L2::cache_hint.L2::256B [%0], [%1], 16, %2, policy;\n\t"
+        "}\n\t"
+        :
+        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
+          "l"((uint64_t)__cvta_generic_to_global(src)),
+          "r"(valid ? 16 : 0)
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void lds_b32v2(
+    const uint32_t* src,
+    uint32_t* dst
+){
+    asm volatile(
+        "ld.shared.v2.b32 {%0, %1}, [%2];\n\t"
+        : "=r"(dst[0]), "=r"(dst[1])
+        : "r"((uint32_t)__cvta_generic_to_shared(src))
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void sts_b32v2(
+    uint32_t* dst,
+    const uint32_t* src
+){
+    asm volatile(
+        "st.shared.v2.b32 [%0], {%1, %2};\n\t"
+        :
+        : "r"((uint32_t)__cvta_generic_to_shared(dst)), "r"(src[0]), "r"(src[1])
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void lds_b32v4(
+    const uint32_t* src,
+    uint32_t* dst
+){
+    asm volatile(
+        "ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];\n\t"
+        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+        : "r"((uint32_t)__cvta_generic_to_shared(src))
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void sts_b32v4(
+    uint32_t* dst,
+    const uint32_t* src
+){
+    asm volatile(
+        "st.shared.v4.b32 [%0], {%1, %2, %3, %4};\n\t"
+        :
+        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
+          "r"(src[0]), "r"(src[1]), "r"(src[2]), "r"(src[3])
         : "memory"
     );
 }
