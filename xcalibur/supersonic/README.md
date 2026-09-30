@@ -1,79 +1,34 @@
 # Supersonic MoE
-> arch: {sm80}, sm89, {sm120x}
-> dtype: bfloat16
-> regime: Midfill
 
-## Kernel 1
+Supersonic is a CUDA/PTX kernel project for the mixture-of-experts (MoE) forward pass: select experts for each token, run their feed-forward networks, and combine the results.
 
-topk (softmax, sigmoid)
+Current focus: bfloat16 on SM89, processing routed tokens in batches of eight per expert.
 
-## Kernel 2:
+## Co-design video
 
-Gather (pack contiguous / l2 prefetch); Gate,Up; Activation; topkW; Write packed contigous
+[![Watch video](https://i9.ytimg.com/vi/br5LvDz76v8/mqdefault.jpg?sqp=CKSW8dUG-oaymwEmCMACELQB8quKqQMa8AEB-AH-CYAC0AWKAgwIABABGGYgZihmMA8=&rs=AOn4CLDEq1nBrPGDO0kCjTg_oMVm7FVpHg)](https://youtu.be/br5LvDz76v8)
 
-Kernel 1 depends on what Kernel 2 needs.
+## Pipeline
 
-## Kernel 3:
+| Kernel | Work | Output |
+|---|---|---|
+| K1 — [topk](topk.cu) | Apply softmax or sigmoid to router scores; select the top K experts per token. | Expert IDs and routing weights (`tKwi`). |
+| K2 — [xR38F1](xR38F1.cu) | Gather an expert's tokens; compute Gate and Up projections; apply SwiGLU and routing weights. | Packed intermediate activations (`Y`) and original token IDs. |
+| K3 — xR38F2 (planned) | Apply the Down projection; sum expert contributions into their original token rows. | One output vector per token. |
 
-Down; write out scatter reduce
+K1 is a separate kernel launch; K2 consumes its completed `tKwi`. Weights are packed at checkpoint creation; K2 writes Y in the order K3 will consume it, avoiding another packing step.
 
-Note:
+## xR38F1
 
-Weights are formated with our layouts at checkpoint creation time to make the downstream kernels optimal.
+`xR38F1_bf16` is the K2 kernel:
 
-## sm89 specifications
+- One thread block owns one expert: 768 threads, 24 warps, 32 KiB shared memory.
+- Each warp computes eight intermediate channels for eight tokens, reducing over the full hidden width.
+- Gate and Up share one FP32 accumulator fragment. The epilogue writes BF16 Y into a reserved region for each expert.
+- Target: two resident blocks per SM; occupancy remains unverified.
 
-SMs: 58
-L1: 128 KB
-L2: 48 MB
-GPU: 24 GB
-Max Warps / SM: 48
-Constant memory / SM: 8KB
+## Status
 
-## Configuration
+K1 and K2 have source implementations. K2 synchronization still needs work; K3 and host integration are pending. CUDA correctness and performance have not been validated.
 
-CTA = 768, 2xCTA / SM
-
-1. smem = 32kb / CTA // 64kb / SM L1 cache
-2. rmem < 43 reg / thread
-
-smem = 8192 reg / CTA
--> 8*2048 = 16,384 bf16 vals
--> 8192 32b vals
-
-- [ ] bank configuration
-
-each panel is 64 32b values
-2 banks per panel
-
-```text
-
-+----------------+
-| mma split v1   |
-+________________+
-i015             | 
-| i1531          |
-v v ...          |
-0 1 2 ... 31 wid |
------------------+
-```
-
-Layout:
-````text
-
-use mma.sp::ordered_metadata.m16n8k32 (paraphrase)
-
-w1i0h01, w1i0h23, w3i0h01, w3i0h23, w1i0h45, w1i0h67, w3i0h45, w3i0h67, 
-
-
-w1i0h1617, w1i0h1819, w1i0h3233, w1i0h3435, w1i0h6465, w1i0h6667,
-
-w3i0h1617, w3i0h1819, w3i0h3233, w3i0h3435, w3i0h6465, w3i0h6667,
-
-
-metadata:
-0x4444'4444 -> w1i0h01, w3i0h01, w1i0h1617, w3i0h1617 fsel=0 or 1
-0xEEEE'EEEE -> w1i0h23, w3i0h23, w1i0h1819, w3i0h1819 fsel=1 or 0
-```
-
-@TODO review layout algebra
+[Full co-design: layouts, register maps, bit matrices and helper contracts →](README2.md)
