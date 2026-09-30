@@ -25,10 +25,10 @@ K1 is a separate kernel launch; K2 consumes its completed `tKwi`. Weights are pa
 - One thread block owns one expert: 768 threads, 24 warps, 32 KiB shared memory.
 - Each warp computes eight intermediate channels for eight tokens, reducing over the full hidden width.
 - Gate and Up share one FP32 accumulator fragment. The epilogue writes BF16 Y into a reserved region for each expert.
-- Target: two resident blocks per SM; occupancy remains unverified.
+- CUDA's occupancy API permits two resident blocks per SM; achieved occupancy remains unprofiled.
 
 ## Status
 
-K1 and K2 have source implementations. K2 synchronization still needs work; K3 and host integration are pending. CUDA correctness and performance have not been validated.
+K1 and K2 pass all 19 [kernel tests](../../tests/README.md) on an L4, including racecheck, memcheck and synccheck. [Model-dimension timings](../../tests/README.md#speed) cover N=1–4096: K2 beats the eager PyTorch baseline at small N and loses at N=2048/4096. K2 spills; K3, wider correctness coverage and full model integration are pending.
 
-[Full co-design: layouts, register maps, bit matrices and helper contracts →](README2.md)
+[Full co-design: layouts, register maps, bit matrices and helper contracts →](xR38.md)

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cstdint>
@@ -26,11 +28,11 @@ __device__ __forceinline__ uint32_t softmax_bf16x2(
 __device__ __forceinline__ void add_bf16x2(
     uint32_t& x, uint32_t y
 ){
-#if __CUDA_ARCH__ >= 900
+#if __CUDA_ARCH__ >= 800
     asm volatile(
-        "add.bf16x2 %0, %0, %1;\n\t"
+        "fma.rn.bf16x2 %0, %0, %2, %1;\n\t"
         : "+r"(x)
-        : "r"(y)
+        : "r"(y), "r"(0x3f80'3f80u)
     );
 #else
     float w = __uint_as_float(x << 16) + __uint_as_float(y << 16);
@@ -98,28 +100,29 @@ __device__ __forceinline__ uint32_t softmax_mul(
         | (x & 0x0000'ffffu);
 }
 
-__device__ __forceinline__ void swiglu_topkw_f32(
-    uint32_t& x, uint32_t y, uint32_t w
+__device__ __forceinline__ void mul_bf16x2(
+    uint32_t& x, uint32_t y
 ){
     asm volatile(
-        "{\n\t"
-        ".reg .b32 t;\n\t"
-        ".reg .pred p;\n\t"
-        "abs.f32 t, %0;\n\t"
-        "mul.f32 t, t, 0fBFB8AA3B;\n\t"
-        "ex2.approx.ftz.f32 t, t;\n\t"
-        "setp.lt.f32 p, %0, 0f00000000;\n\t"
-        "@p mul.f32 %0, %0, t;\n\t"
-        "add.f32 t, t, 0f3F800000;\n\t"
-        "rcp.approx.ftz.f32 t, t;\n\t"
-        "mul.f32 %0, %0, t;\n\t"
-        "mul.f32 %0, %0, %1;\n\t"
-        "and.b32 t, %2, 0xffff0000;\n\t"
-        "mul.f32 %0, %0, t;\n\t"
-        "}\n\t"
-        : "+&r"(x)
-        : "r"(y), "r"(w)
+        "fma.rn.bf16x2 %0, %0, %1, %2;\n\t"
+        : "+r"(x)
+        : "r"(y), "r"(0x8000'8000u)
     );
+}
+
+__device__ __forceinline__ void swiglu_topkw_bf16x2(
+    uint32_t& x, uint32_t y, uint32_t w
+){
+    uint32_t t = softmax_bf16x2((x & 0x7fff'7fffu) | 0x8000'8000u);
+    uint32_t s = t;
+    add_bf16x2(s, 0x3f80'3f80u);
+    rcp_bf16x2(s);
+    t = ((x & 0x0000'8000u) ? (t & 0x0000'ffffu) : 0x0000'3f80u)
+        | ((x & 0x8000'0000u) ? (t & 0xffff'0000u) : 0x3f80'0000u);
+    mul_bf16x2(s, t);
+    mul_bf16x2(x, s);
+    mul_bf16x2(x, y);
+    mul_bf16x2(x, w);
 }
 
 __device__ __forceinline__ uint32_t cvt_bf16x2_f32(
@@ -167,6 +170,22 @@ __device__ __forceinline__ void ldcg_b32v4(
 #else
         "ld.global.cg.v4.b32 {%0, %1, %2, %3}, [%4];\n\t"
 #endif
+        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+        : "l"((uint64_t)__cvta_generic_to_global(src))
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void ldnc_evict_last_b32v4(
+    const void* src,
+    uint32_t* dst
+){
+    asm volatile(
+        "{\n\t"
+        ".reg .b64 policy;\n\t"
+        "createpolicy.fractional.L2::evict_last.b64 policy, 1.0;\n\t"
+        "ld.global.nc.L2::cache_hint.L2::256B.v4.b32 {%0, %1, %2, %3}, [%4], policy;\n\t"
+        "}\n\t"
         : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
         : "l"((uint64_t)__cvta_generic_to_global(src))
         : "memory"
@@ -235,6 +254,31 @@ __device__ __forceinline__ void cp_gmem_b32v4(
         :
         : "l"((uint64_t)__cvta_generic_to_global(src)),
           "l"((uint64_t)__cvta_generic_to_global(dst))
+        : "memory"
+    );
+}
+
+__device__ __forceinline__ void cp_smem_cs_b32v4(
+    const void* src,
+    uint32_t* dst,
+    bool valid = true
+){
+    asm volatile(
+        "{\n\t"
+        ".reg .pred p;\n\t"
+        ".reg .b32 a, b, c, d;\n\t"
+        "mov.b32 a, 0;\n\t"
+        "mov.b32 b, 0;\n\t"
+        "mov.b32 c, 0;\n\t"
+        "mov.b32 d, 0;\n\t"
+        "setp.ne.u32 p, %2, 0;\n\t"
+        "@p ld.global.cs.v4.b32 {a, b, c, d}, [%1];\n\t"
+        "st.shared.v4.b32 [%0], {a, b, c, d};\n\t"
+        "}\n\t"
+        :
+        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
+          "l"((uint64_t)__cvta_generic_to_global(src)),
+          "r"(uint32_t(valid))
         : "memory"
     );
 }
