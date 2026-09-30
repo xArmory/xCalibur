@@ -15,9 +15,7 @@ __device__ __forceinline__ void xR38FF1_bf16(
 	int32_t E, int32_t N, int32_t I, int32_t H
 ){
 
-	// W13[e,i,h/4] = [w1h01, w1h23, w3h01, w3h23] // 32b words
-	// warp: rows 0..7 = w1, rows 8..15 = w3; columns = 8 tokens
-	// rmem[0..15] = W13; [25..28] = X; [29..32] = C
+	
 	for (int32_t i = 0; i < I; i += (blockDim.x >> 2)) {
 		#pragma unroll 4
 		for (int32_t j = 29; j < 33; j++) rmem[j] = 0u;
