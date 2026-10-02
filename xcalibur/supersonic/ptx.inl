@@ -1,444 +1,117 @@
 #pragma once
-
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
+#include <math_constants.h>
 #include <cstdint>
 
-#define f322b(x) __float_as_uint(x)
-#define u162bf16(x) __ushort_as_bfloat16(x)
+using bf16 = __nv_bfloat16;
 
-__device__ __forceinline__ uint32_t softmax_bf16x2(
-    uint32_t x, float m = 0.0f
-){
-    float w = __uint_as_float(x << 16) - m;
-    float z = __uint_as_float(x & 0xffff'0000u) - m;
-    float y = 1.4426950408889634f;
-    asm volatile(
-        "mul.f32 %0, %0, %2;\n\t"
-        "mul.f32 %1, %1, %2;\n\t"
-        "ex2.approx.ftz.f32 %0, %0;\n\t"
-        "ex2.approx.ftz.f32 %1, %1;\n\t"
-        : "+&f"(w), "+&f"(z)
-        : "f"(y)
-    );
-    __nv_bfloat162_raw tmp = __floats2bfloat162_rn(w, z);
-    return uint32_t(tmp.x) | (uint32_t(tmp.y) << 16);
+__device__ __forceinline__ float bf(float x){ return __bfloat162float(__float2bfloat16_rn(x)); }
+__device__ __forceinline__ float ex(float x){
+	x *= 1.4426950408889634f;
+	asm("ex2.approx.f32 %0,%0;" : "+f"(x));
+	return x;
+}
+__device__ __forceinline__ float divf(float x, float y){
+	asm("div.full.f32 %0,%1,%2;" : "=f"(x) : "f"(x), "f"(y));
+	return x;
+}
+__device__ __forceinline__ float swiglu(float g, float u){
+	g=bf(g); u=bf(u);
+	float t=bf(ex(-fabsf(g))), s=bf(divf(1.f,bf(1.f+t)));
+	s=bf(s*(g<0 ? t : 1.f));
+	return bf(bf(g*s)*u);
+}
+__device__ __forceinline__ uint32_t pack2(float a, float b){
+	uint32_t x;
+	asm("cvt.rn.bf16x2.f32 %0,%2,%1;" : "=r"(x) : "f"(a), "f"(b));
+	return x;
+}
+__device__ __forceinline__ uint32_t mul2(uint32_t x, float w){
+	uint32_t y=pack2(w,w);
+	asm("fma.rn.bf16x2 %0,%1,%2,%3;" : "=r"(x) : "r"(x), "r"(y), "r"(0x80008000u));
+	return x;
+}
+__device__ __forceinline__ uint32_t add2(uint32_t x, uint32_t y){
+	asm("fma.rn.bf16x2 %0,%1,%2,%3;" : "=r"(x) : "r"(x), "r"(0x3f803f80u), "r"(y));
+	return x;
+}
+__device__ __forceinline__ int ld(const int* p, bool valid, int x=0){
+	asm volatile("{ .reg .pred p; setp.ne.u32 p,%2,0; @p ld.global.b32 %0,[%1]; }" : "+r"(x) : "l"(p),"r"(int(valid)) : "memory");
+	return x;
+}
+__device__ __forceinline__ float ld(const float* p, bool valid){
+	float x=0;
+	asm volatile("{ .reg .pred p; setp.ne.u32 p,%2,0; @p ld.global.f32 %0,[%1]; }" : "+f"(x) : "l"(p),"r"(int(valid)) : "memory");
+	return x;
+}
+__device__ __forceinline__ void store2(uint32_t* p, uint32_t x, bool valid){
+	asm volatile("{ .reg .pred p; setp.ne.u32 p,%2,0; @p st.global.b32 [%0],%1; }" :: "l"(p),"r"(x),"r"(int(valid)) : "memory");
+}
+__device__ __forceinline__ void reduce2(uint32_t* p, uint32_t x, bool valid=true){
+	asm volatile("{ .reg .pred p; .reg .b32 old,next,assumed; .reg .b64 policy;\n"
+		"setp.ne.u32 p,%3,0; @!p bra done;\n"
+		"createpolicy.fractional.L2::evict_last.b64 policy,1.0;\n"
+		"ld.global.cg.L2::cache_hint.b32 old,[%0],policy;\n"
+		"loop: mov.b32 assumed,old; fma.rn.bf16x2 next,old,%2,%1;\n"
+		"atom.relaxed.gpu.global.cas.b32 old,[%0],assumed,next;\n"
+		"setp.ne.b32 p,old,assumed; @p bra loop; done: }"
+		:: "l"(p), "r"(x), "r"(0x3f803f80u), "r"(int(valid)) : "memory");
+}
+__device__ __forceinline__ int sw(int r, int k){ return r*64+(k^((r&7)<<3)); }
+
+template <bool ALIGNED=true>
+__device__ __forceinline__ void cp(bf16* dst, const bf16* src, int size){
+	if (ALIGNED || (uintptr_t(src)&15)==0) {
+		asm volatile("cp.async.cg.shared.global [%0],[%1],16,%2;" :: "r"(uint32_t(__cvta_generic_to_shared(dst))),"l"(src),"r"(size*2) : "memory");
+	} else {
+		#pragma unroll
+		for (int j=0;j<8;j++) dst[j]=j<size ? src[j] : __float2bfloat16_rn(0.f);
+	}
+}
+__device__ __forceinline__ void commit(){ asm volatile("cp.async.commit_group;" ::: "memory"); }
+template <int G>
+__device__ __forceinline__ void wait(){ asm volatile("cp.async.wait_group %0;" :: "n"(G) : "memory"); }
+__device__ __forceinline__ void ldm4(uint32_t* x, const bf16* p){
+	asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
+		: "=r"(x[0]),"=r"(x[1]),"=r"(x[2]),"=r"(x[3]) : "r"(uint32_t(__cvta_generic_to_shared(p))));
+}
+__device__ __forceinline__ void ldm2(uint32_t* x, const bf16* p){
+	asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1},[%2];"
+		: "=r"(x[0]),"=r"(x[1]) : "r"(uint32_t(__cvta_generic_to_shared(p))));
+}
+__device__ __forceinline__ void mma(float* c, const uint32_t* a, const uint32_t* b){
+	asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+		: "+f"(c[0]),"+f"(c[1]),"+f"(c[2]),"+f"(c[3])
+		: "r"(a[0]),"r"(a[1]),"r"(a[2]),"r"(a[3]),"r"(b[0]),"r"(b[1]));
 }
 
-__device__ __forceinline__ void add_bf16x2(
-    uint32_t& x, uint32_t y
-){
-#if __CUDA_ARCH__ >= 800
-    asm volatile(
-        "fma.rn.bf16x2 %0, %0, %2, %1;\n\t"
-        : "+r"(x)
-        : "r"(y), "r"(0x3f80'3f80u)
-    );
-#else
-    float w = __uint_as_float(x << 16) + __uint_as_float(y << 16);
-    float z = __uint_as_float(x & 0xffff'0000u) + __uint_as_float(y & 0xffff'0000u);
-    __nv_bfloat162_raw tmp = __floats2bfloat162_rn(w, z);
-    x = uint32_t(tmp.x) | (uint32_t(tmp.y) << 16);
-#endif
-}
-
-__device__ __forceinline__ float rcp_f32(
-    float x
-){
-    asm volatile(
-        "rcp.approx.ftz.f32 %0, %0;\n\t"
-        : "+f"(x)
-    );
-    return x;
-}
-
-__device__ __forceinline__ void rcp_bf16x2(
-    uint32_t& x
-){
-    float w = __uint_as_float(x << 16);
-    float z = __uint_as_float(x & 0xffff'0000u);
-    asm volatile(
-        "rcp.approx.ftz.f32 %0, %0;\n\t"
-        "rcp.approx.ftz.f32 %1, %1;\n\t"
-        : "+&f"(w), "+&f"(z)
-    );
-    __nv_bfloat162_raw tmp = __floats2bfloat162_rn(w, z);
-    x = uint32_t(tmp.x) | (uint32_t(tmp.y) << 16);
-}
-
-__device__ __forceinline__ void add_bf16x2x1(
-    uint32_t x, uint32_t& y
-){
-    uint32_t tmp = x << 16;
-    add_bf16x2(tmp, x & 0xffff'0000u);
-    add_bf16x2(y, tmp & 0xffff'0000u);
-}
-
-__device__ __forceinline__ uint32_t softmax_mul(
-    uint32_t x, uint32_t y
-){
-    uint32_t idx = x & 0x0000'ffffu;
-    x &= 0xffff'0000u;
-#if __CUDA_ARCH__ >= 900
-    asm volatile(
-        "mul.bf16x2 %0, %0, %1;\n\t"
-        : "+r"(x)
-        : "r"(y)
-    );
-#else
-    float w = __uint_as_float(x) * __uint_as_float(y & 0xffff'0000u);
-    x = uint32_t(__bfloat16_as_ushort(__float2bfloat16_rn(w))) << 16;
-#endif
-    return (x & 0xffff'0000u) | idx;
-}
-
-__device__ __forceinline__ uint32_t softmax_mul(
-    uint32_t x, float y
-){
-    float w = __uint_as_float(x & 0xffff'0000u) * y;
-    return (uint32_t(__bfloat16_as_ushort(__float2bfloat16_rn(w))) << 16)
-        | (x & 0x0000'ffffu);
-}
-
-__device__ __forceinline__ void mul_bf16x2(
-    uint32_t& x, uint32_t y
-){
-    asm volatile(
-        "fma.rn.bf16x2 %0, %0, %1, %2;\n\t"
-        : "+r"(x)
-        : "r"(y), "r"(0x8000'8000u)
-    );
-}
-
-__device__ __forceinline__ void swiglu_topkw_bf16x2(
-    uint32_t& x, uint32_t y, uint32_t w
-){
-    uint32_t t = softmax_bf16x2((x & 0x7fff'7fffu) | 0x8000'8000u);
-    uint32_t s = t;
-    add_bf16x2(s, 0x3f80'3f80u);
-    rcp_bf16x2(s);
-    t = ((x & 0x0000'8000u) ? (t & 0x0000'ffffu) : 0x0000'3f80u)
-        | ((x & 0x8000'0000u) ? (t & 0xffff'0000u) : 0x3f80'0000u);
-    mul_bf16x2(s, t);
-    mul_bf16x2(x, s);
-    mul_bf16x2(x, y);
-    mul_bf16x2(x, w);
-}
-
-__device__ __forceinline__ uint32_t cvt_bf16x2_f32(
-    uint32_t x, uint32_t y
-){
-    asm volatile(
-        "cvt.rn.bf16x2.f32 %0, %2, %1;\n\t"
-        : "=r"(x)
-        : "r"(x), "r"(y)
-    );
-    return x;
-}
-
-__device__ __forceinline__ uint32_t prmt_b32(
-    uint32_t x, uint32_t y, uint32_t s
-){
-    asm volatile(
-        "prmt.b32 %0, %0, %1, %2;\n\t"
-        : "+r"(x)
-        : "r"(y), "r"(s)
-    );
-    return x;
-}
-
-__device__ __forceinline__ void ldcg_b16(
-    const void* src,
-    uint16_t& dst
-){
-    asm volatile(
-        "ld.global.cg.b16 %0, [%1];\n\t"
-        : "=h"(dst)
-        : "l"((uint64_t)__cvta_generic_to_global(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void ldcg_b32(
-    const void* src,
-    uint32_t& dst
-){
-    asm volatile(
-        "ld.global.cg.b32 %0, [%1];\n\t"
-        : "=r"(dst)
-        : "l"((uint64_t)__cvta_generic_to_global(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void ldcg_b32v4(
-    const void* src,
-    uint32_t* dst
-){
-    asm volatile(
-#if __CUDA_ARCH__ >= 750
-        "ld.global.cg.L2::128B.v4.b32 {%0, %1, %2, %3}, [%4];\n\t"
-#else
-        "ld.global.cg.v4.b32 {%0, %1, %2, %3}, [%4];\n\t"
-#endif
-        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-        : "l"((uint64_t)__cvta_generic_to_global(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void ldnc_evict_last_b32v4(
-    const void* src,
-    uint32_t* dst
-){
-    asm volatile(
-        "{\n\t"
-        ".reg .b64 policy;\n\t"
-        "createpolicy.fractional.L2::evict_last.b64 policy, 1.0;\n\t"
-        "ld.global.nc.L2::cache_hint.L2::256B.v4.b32 {%0, %1, %2, %3}, [%4], policy;\n\t"
-        "}\n\t"
-        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-        : "l"((uint64_t)__cvta_generic_to_global(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void ldcg_b16x8(
-    const __nv_bfloat16* src,
-    uint32_t* dst,
-    int32_t size
-){
-    if (size == 8 && !(uint64_t(src) & 15u)) {
-        ldcg_b32v4(src, dst);
-        return;
-    }
-    #pragma unroll 4
-    for (int32_t j = 0; j < 4; j++) {
-        uint16_t tmp;
-        dst[j] = 0u;
-        if ((j << 1) < size) {
-            ldcg_b16(src + (j << 1), tmp);
-            dst[j] = tmp;
-        }
-        if (((j << 1) + 1) < size) {
-            ldcg_b16(src + (j << 1) + 1, tmp);
-            dst[j] |= uint32_t(tmp) << 16;
-        }
-    }
-}
-
-__device__ __forceinline__ void stg_b32(
-    void* dst,
-    uint32_t x
-){
-    asm volatile(
-        "st.global.b32 [%0], %1;\n\t"
-        :
-        : "l"((uint64_t)__cvta_generic_to_global(dst)), "r"(x)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void stg_b16(
-    void* dst,
-    uint16_t x
-){
-    asm volatile(
-        "st.global.b16 [%0], %1;\n\t"
-        :
-        : "l"((uint64_t)__cvta_generic_to_global(dst)), "h"(x)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void stg_b32v4(
-    void* dst,
-    uint32_t a, uint32_t b, uint32_t c, uint32_t d
-){
-    asm volatile(
-        "st.global.v4.b32 [%0], {%1, %2, %3, %4};\n\t"
-        :
-        : "l"((uint64_t)__cvta_generic_to_global(dst)),
-          "r"(a), "r"(b), "r"(c), "r"(d)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void cp_gmem_b32v4(
-    const void* src,
-    void* dst
-){
-    asm volatile(
-        "{\n\t"
-        ".reg .b32 a, b, c, d;\n\t"
-        "ld.global.cg.v4.b32 {a, b, c, d}, [%0];\n\t"
-        "st.global.v4.b32 [%1], {a, b, c, d};\n\t"
-        "}\n\t"
-        :
-        : "l"((uint64_t)__cvta_generic_to_global(src)),
-          "l"((uint64_t)__cvta_generic_to_global(dst))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void cp_smem_cs_b32v4(
-    const void* src,
-    uint32_t* dst,
-    bool valid = true
-){
-    asm volatile(
-        "{\n\t"
-        ".reg .pred p;\n\t"
-        ".reg .b32 a, b, c, d;\n\t"
-        "mov.b32 a, 0;\n\t"
-        "mov.b32 b, 0;\n\t"
-        "mov.b32 c, 0;\n\t"
-        "mov.b32 d, 0;\n\t"
-        "setp.ne.u32 p, %2, 0;\n\t"
-        "@p ld.global.cs.v4.b32 {a, b, c, d}, [%1];\n\t"
-        "st.shared.v4.b32 [%0], {a, b, c, d};\n\t"
-        "}\n\t"
-        :
-        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
-          "l"((uint64_t)__cvta_generic_to_global(src)),
-          "r"(uint32_t(valid))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void cp_async_ca_b32v4(
-    const void* src,
-    uint32_t* dst,
-    int32_t size = 16
-){
-    asm volatile(
-        "cp.async.ca.shared.global [%0], [%1], 16, %2;\n\t"
-        :
-        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
-          "l"((uint64_t)__cvta_generic_to_global(src)),
-          "r"(size)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void cp_async_evict_last_b32v4(
-    const void* src,
-    uint32_t* dst,
-    bool valid = true
-){
-    asm volatile(
-        "{\n\t"
-        ".reg .b64 policy;\n\t"
-        "createpolicy.fractional.L2::evict_last.b64 policy, 1.0;\n\t"
-        "cp.async.cg.shared.global.L2::cache_hint.L2::256B [%0], [%1], 16, %2, policy;\n\t"
-        "}\n\t"
-        :
-        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
-          "l"((uint64_t)__cvta_generic_to_global(src)),
-          "r"(valid ? 16 : 0)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void lds_b32v2(
-    const uint32_t* src,
-    uint32_t* dst
-){
-    asm volatile(
-        "ld.shared.v2.b32 {%0, %1}, [%2];\n\t"
-        : "=r"(dst[0]), "=r"(dst[1])
-        : "r"((uint32_t)__cvta_generic_to_shared(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void sts_b32v2(
-    uint32_t* dst,
-    const uint32_t* src
-){
-    asm volatile(
-        "st.shared.v2.b32 [%0], {%1, %2};\n\t"
-        :
-        : "r"((uint32_t)__cvta_generic_to_shared(dst)), "r"(src[0]), "r"(src[1])
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void lds_b32v4(
-    const uint32_t* src,
-    uint32_t* dst
-){
-    asm volatile(
-        "ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];\n\t"
-        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-        : "r"((uint32_t)__cvta_generic_to_shared(src))
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void sts_b32v4(
-    uint32_t* dst,
-    const uint32_t* src
-){
-    asm volatile(
-        "st.shared.v4.b32 [%0], {%1, %2, %3, %4};\n\t"
-        :
-        : "r"((uint32_t)__cvta_generic_to_shared(dst)),
-          "r"(src[0]), "r"(src[1]), "r"(src[2]), "r"(src[3])
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void cp_async_commit_group(){
-    asm volatile(
-        "cp.async.commit_group;\n\t"
-        :
-        :
-        : "memory"
-    );
-}
-
-template <int32_t N>
-__device__ __forceinline__ void cp_async_wait_group(){
-    static_assert(N >= 0, "cp.async wait group must be nonnegative");
-    asm volatile(
-        "cp.async.wait_group %0;\n\t"
-        :
-        : "n"(N)
-        : "memory"
-    );
-}
-
-__device__ __forceinline__ void ldmatrix_b16x4(
-    const void* src,
-    uint32_t* dst
-){
-    asm volatile(
-        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 "
-        "{%0, %1, %2, %3}, [%4];\n\t"
-        : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-        : "r"((uint32_t)__cvta_generic_to_shared(src))
-        : "memory"
-    );
-}
-
-template <int32_t fsel = 0>
-__device__ __forceinline__ void mma_sp_m16n8k32_bf16(
-    uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
-    const uint32_t* b,
-    uint32_t* c,
-    uint32_t e
-){
-    static_assert(fsel == 0 || fsel == 1, "mma.sp fsel must be 0 or 1");
-    asm volatile(
-        "mma.sp::ordered_metadata.sync.aligned.m16n8k32.row.col.f32.bf16.bf16.f32 "
-        "{%0, %1, %2, %3}, "
-        "{%4, %5, %6, %7}, "
-        "{%8, %9, %10, %11}, "
-        "{%0, %1, %2, %3}, %12, %13;\n\t"
-        : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
-        : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
-          "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]),
-          "r"(e), "n"(fsel)
-    );
+template <int M, int O, int W>
+__device__ __forceinline__ void compute(const bf16* A,const bf16* B,float* c){
+	constexpr int WM=(M/16 < (W>=16 ? 4:2) ? M/16 : (W>=16 ? 4:2)), WN=W/WM;
+	constexpr int RM=M/(WM*16), RN=O/(WN*8);
+	int lane=threadIdx.x&31,warp=threadIdx.x>>5,m=(warp/WN)*16,n=(warp%WN)*8;
+	uint32_t a[RM*16],b[RN*8];
+	#pragma unroll
+	for (int k=0;k<4;k++) {
+		#pragma unroll
+		for (int j=0;j<RM;j++) ldm4(a+4*(k*RM+j),A+sw(m+j*WM*16+(lane&15),16*k+(lane>>4)*8));
+	}
+	#pragma unroll
+	for (int k=0;k<2;k++) {
+		#pragma unroll
+		for (int j=0;j<RN;j++) {
+			uint32_t v[4];ldm4(v,B+sw(n+j*WN*8+(lane&7),32*k+(lane>>3)*8));
+			b[2*(2*k*RN+j)]=v[0];b[2*(2*k*RN+j)+1]=v[1];
+			b[2*((2*k+1)*RN+j)]=v[2];b[2*((2*k+1)*RN+j)+1]=v[3];
+		}
+	}
+	#pragma unroll
+	for (int k=0;k<4;k++) {
+		#pragma unroll
+		for (int i=0;i<RM;i++) {
+			#pragma unroll
+			for (int j=0;j<RN;j++) mma(c+4*(i*RN+j),a+4*(k*RM+i),b+2*(k*RN+j));
+		}
+	}
 }

@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 tests/ablations/*
 tests/ablations/
+/garage/
