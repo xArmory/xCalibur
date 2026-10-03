@@ -1,21 +1,19 @@
-![xCalibur](assets/xCalibur_banner.png)
-
 # xArmory // xCalibur
 
-Remember when Kaggle was not pay to win?
+<p align="center">
+  <img src="assets/xCalibur_banner.png" alt="xCalibur" width="300" height="300">
+</p>
 
-Don't worry I gotchu, presenting xArmory/xCalibur.
+> xCalibur aims to find **automatable algorithms for solving tractable problems**, on consumer hardware. 
 
-An effort to level the playing field through co-designing GPU kernels for the L4.
+## Our current focus:
 
-The goal is to supply the backend GPU kernels needed to run inference and training as fast as physically possible.
+**Can LLM(s), trained on a vocabulary based of layout algebra and a dataset of gpu kernel implementations, implement a MoE operator that matches vendor performance on the L4?**
 
-First up: [Supersonic MoE](xcalibur/supersonic/README.md).
+## References
 
-Jokes aside, it's still a work in progress.
-
-Taking a breather. We got ahead of ourselves implementing without enough co-design. After some rest, we'll work through it together: the design, the implementation, and a faster variant.
-
-[Follow along on Kaggle](https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-2/discussion/744237).
-
-Lets get your Sol back.
+- [A Practical Automatic Polyhedral Parallelizer and Locality Optimizer](https://www.csa.iisc.ac.in/~udayb/publications/uday-pldi08.pdf)
+- [Categorical Foundations for CuTe Layouts](https://arxiv.org/abs/2601.05972) (Colfax Research)
+- [CuTe Layout Representation and Algebra](https://arxiv.org/abs/2603.02298) (Cris Cecka)
+- [Linear Layouts](https://arxiv.org/abs/2505.23819)
+- [GPU Mode's KernelBot dataset](https://huggingface.co/datasets/GPUMODE/kernelbot-data)
